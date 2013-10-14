@@ -30,7 +30,7 @@
 @end
 
 #define CODialogSynth(x) @synthesize x = x##_;
-#define CODialogAssertMQ() NSAssert(dispatch_get_current_queue() == dispatch_get_main_queue(), @"%@ must be called on main queue", NSStringFromSelector(_cmd));
+#define CODialogAssertMQ() NSAssert([NSThread isMainThread], @"%@ must be called on main thread", NSStringFromSelector(_cmd));
 
 #define kCODialogAnimationDuration 0.15
 #define kCODialogPopScale 0.5
@@ -51,6 +51,7 @@
 }
 CODialogSynth(customView)
 CODialogSynth(dialogStyle)
+CODialogSynth(dialogColorStyle)
 CODialogSynth(title)
 CODialogSynth(subtitle)
 CODialogSynth(batchDelay)
@@ -73,6 +74,7 @@ CODialogSynth(highlightedIndex)
   if (self) {
     self.batchDelay = 0;
     self.highlightedIndex = -1;
+    self.dialogColorStyle = CODialogColorStyleBlue;
     self.titleFont = [UIFont boldSystemFontOfSize:18.0];
     self.subtitleFont = [UIFont systemFontOfSize:14.0];
     self.hostWindow = hostWindow;
@@ -85,6 +87,7 @@ CODialogSynth(highlightedIndex)
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
     [nc addObserver:self selector:@selector(keyboardWillShow:) name:UIKeyboardWillShowNotification object:nil];
     [nc addObserver:self selector:@selector(keyboardWillHide:) name:UIKeyboardWillHideNotification object:nil];
+    [nc addObserver:self selector:@selector(orientationChanged:) name:UIApplicationDidChangeStatusBarOrientationNotification object:nil];
   }
   return self;
 }
@@ -95,11 +98,33 @@ CODialogSynth(highlightedIndex)
 
 - (void)adjustToKeyboardBounds:(CGRect)bounds {
   CGRect screenBounds = [[UIScreen mainScreen] bounds];
-  CGFloat height = CGRectGetHeight(screenBounds) - CGRectGetHeight(bounds);
-  
+  CGFloat height = 0;
+    
   CGRect frame = self.frame;
-  frame.origin.y = (height - CGRectGetHeight(self.bounds)) / 2.0;
-  
+    switch ([UIApplication sharedApplication].statusBarOrientation) {
+        case UIInterfaceOrientationPortrait:
+            height = CGRectGetHeight(screenBounds) - CGRectGetHeight(bounds);
+            frame.origin.y = (height - CGRectGetHeight(self.bounds)) / 2.0;
+            break;
+            
+        case UIInterfaceOrientationPortraitUpsideDown:
+            height = CGRectGetHeight(screenBounds) - CGRectGetHeight(bounds);
+            frame.origin.y = (height - CGRectGetHeight(self.bounds)) / 2.0 + CGRectGetHeight(bounds);
+            break;
+            
+        case UIInterfaceOrientationLandscapeLeft:
+            height = CGRectGetWidth(screenBounds) - CGRectGetWidth(bounds);
+            frame.origin.x = (height - CGRectGetWidth(self.bounds)) / 2.0;
+            break;
+            
+        case UIInterfaceOrientationLandscapeRight:
+            height = CGRectGetWidth(screenBounds) - CGRectGetWidth(bounds);
+            frame.origin.x = (height - CGRectGetWidth(self.bounds)) / 2.0  + CGRectGetWidth(bounds);
+            break;
+            
+        default:
+            break;
+    }
   if (CGRectGetMinY(frame) < 0) {
     NSLog(@"warning: dialog is clipped, origin negative (%f)", CGRectGetMinY(frame));
   }
@@ -122,12 +147,46 @@ CODialogSynth(highlightedIndex)
   [self adjustToKeyboardBounds:CGRectZero];
 }
 
+- (void)orientationChanged:(NSNotification *)notification {
+	[UIView animateWithDuration:0.3
+	                 animations: ^{
+                         [self setTransform:[self dialogTransform]];
+                     }];
+}
+
+- (CGAffineTransform)dialogTransform {
+#define degreesToRadian(x) (M_PI * (x) / 180.0)
+    CGAffineTransform transform = CGAffineTransformIdentity;
+    switch ([UIApplication sharedApplication].statusBarOrientation) {
+        case UIInterfaceOrientationPortrait:
+            transform = CGAffineTransformMakeRotation(degreesToRadian(0));
+            break;
+        case UIInterfaceOrientationPortraitUpsideDown:
+            transform = CGAffineTransformMakeRotation(degreesToRadian(180));
+            break;
+        case UIInterfaceOrientationLandscapeLeft:
+            transform = CGAffineTransformMakeRotation(degreesToRadian(270));
+            break;
+        case UIInterfaceOrientationLandscapeRight:
+            transform = CGAffineTransformMakeRotation(degreesToRadian(90));
+            break;
+        default:
+            break;
+    }
+    return transform;
+}
+
 - (CGRect)defaultDialogFrame {
   CGRect appFrame = [[UIScreen mainScreen] applicationFrame];
-  CGRect insetFrame = CGRectIntegral(CGRectInset(appFrame, 20.0, 20.0));
-  insetFrame.size.height = 180.0;
-  
-  return insetFrame;
+  //CGRect insetFrame = CGRectIntegral(CGRectInset(appFrame, 20.0, 20.0));
+      CGRect insetFrame = CGRectZero;
+      if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+            insetFrame.size.width = 380;
+          } else {
+                insetFrame.size.width = 280;
+              }
+      insetFrame.size.height = MIN(appFrame.size.width, appFrame.size.height) - 40;
+    return insetFrame;
 }
 
 - (void)setProgress:(CGFloat)progress {
@@ -185,14 +244,26 @@ CODialogSynth(highlightedIndex)
   CGFloat layoutFrameInset = kCODialogFrameInset + kCODialogPadding;
   CGRect layoutFrame = CGRectInset(self.bounds, layoutFrameInset, layoutFrameInset);
   CGFloat layoutWidth = CGRectGetWidth(layoutFrame);
-  
+    
+	if (self.maximumDialogWidth > 0) {
+		layoutWidth = MIN(layoutWidth, self.maximumDialogWidth);
+		layoutFrame.size.width = layoutWidth;
+	}
   // Title frame
   CGFloat titleHeight = 0;
   CGFloat minY = CGRectGetMinY(layoutFrame);
   if (self.title.length > 0) {
-    titleHeight = [self.title sizeWithFont:self.titleFont
-                         constrainedToSize:CGSizeMake(layoutWidth, MAXFLOAT)
-                             lineBreakMode:UILineBreakModeWordWrap].height;
+      
+      NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle defaultParagraphStyle] mutableCopy];
+      paragraphStyle.lineBreakMode = NSLineBreakByWordWrapping;
+      paragraphStyle.alignment = NSTextAlignmentCenter;
+      NSDictionary *dictionary = @{ NSFontAttributeName: self.titleFont,
+                                    NSParagraphStyleAttributeName: paragraphStyle,
+                                    NSForegroundColorAttributeName: [UIColor whiteColor] };
+      
+      titleHeight = [self.title boundingRectWithSize:CGSizeMake(layoutWidth, MAXFLOAT) options:NSStringDrawingUsesFontLeading attributes:dictionary context:nil].size.height;
+      
+      
     minY += kCODialogPadding;
   }
   layout.titleRect = CGRectMake(CGRectGetMinX(layoutFrame), minY, layoutWidth, titleHeight);
@@ -201,9 +272,16 @@ CODialogSynth(highlightedIndex)
   CGFloat subtitleHeight = 0;
   minY = CGRectGetMaxY(layout.titleRect);
   if (self.subtitle.length > 0) {
-    subtitleHeight = [self.subtitle sizeWithFont:self.subtitleFont
-                               constrainedToSize:CGSizeMake(layoutWidth, MAXFLOAT)
-                                   lineBreakMode:UILineBreakModeWordWrap].height;
+      
+      NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle defaultParagraphStyle] mutableCopy];
+      paragraphStyle.lineBreakMode = NSLineBreakByWordWrapping;
+      paragraphStyle.alignment = NSTextAlignmentCenter;
+      NSDictionary *dictionary = @{ NSFontAttributeName: self.titleFont,
+                                    NSParagraphStyleAttributeName: paragraphStyle,
+                                    NSForegroundColorAttributeName: [UIColor whiteColor] };
+      
+      subtitleHeight = [self.title boundingRectWithSize:CGSizeMake(layoutWidth, MAXFLOAT) options:NSStringDrawingUsesFontLeading attributes:dictionary context:nil].size.height;
+      
     minY += kCODialogPadding;
   }
   layout.subtitleRect = CGRectMake(CGRectGetMinX(layoutFrame), minY, layoutWidth, subtitleHeight);
@@ -331,15 +409,17 @@ CODialogSynth(highlightedIndex)
   }
   
   // Adjust frame size
-  [UIView animateWithDuration:animationDuration delay:0 options:UIViewAnimationOptionLayoutSubviews animations:^{
-    CGRect dialogFrame = CGRectInset(layoutFrame, -kCODialogFrameInset - kCODialogPadding, -kCODialogFrameInset - kCODialogPadding);
-    dialogFrame.origin.x = (CGRectGetWidth(self.hostWindow.bounds) - CGRectGetWidth(dialogFrame)) / 2.0;
-    dialogFrame.origin.y = (CGRectGetHeight(self.hostWindow.bounds) - CGRectGetHeight(dialogFrame)) / 2.0;
-    
-    self.frame = CGRectIntegral(dialogFrame);
-  } completion:^(BOOL finished) {
-    [self setNeedsDisplay];
-  }];
+        [UIView animateWithDuration:animationDuration delay:0 options:UIViewAnimationOptionLayoutSubviews animations:^{
+              CGRect dialogFrame = CGRectInset(layoutFrame, -kCODialogFrameInset - kCODialogPadding, -kCODialogFrameInset - kCODialogPadding);
+              self.bounds = (CGRect){CGPointZero, dialogFrame.size};
+              dialogFrame = self.frame;
+              dialogFrame.origin.x = (CGRectGetWidth(self.hostWindow.bounds) - CGRectGetWidth(dialogFrame)) / 2.0;
+              dialogFrame.origin.y = (CGRectGetHeight(self.hostWindow.bounds) - CGRectGetHeight(dialogFrame)) / 2.0;
+        
+              self.frame = CGRectIntegral(dialogFrame);
+            } completion:^(BOOL finished) {
+                    [self setNeedsDisplay];
+                }];
 }
 
 - (void)resetLayout {
@@ -428,15 +508,16 @@ CODialogSynth(highlightedIndex)
   
   if (show) {
     // Scale down ourselves for pop animation
-    self.transform = CGAffineTransformMakeScale(kCODialogPopScale, kCODialogPopScale);
-    
+      CGAffineTransform originTransform = [self dialogTransform];
+      self.transform = CGAffineTransformScale(originTransform, kCODialogPopScale, kCODialogPopScale);
     // Animate
     NSTimeInterval animationDuration = (flag ? kCODialogAnimationDuration : 0.0);
     [UIView animateWithDuration:animationDuration delay:0 options:UIViewAnimationOptionLayoutSubviews animations:^{
       overlay.alpha = 1.0;
-      self.transform = CGAffineTransformIdentity;
+      self.transform = CGAffineTransformScale([self dialogTransform], kCODialogPopScale, kCODialogPopScale);
     } completion:^(BOOL finished) {
       // stub
+        self.transform = [self dialogTransform];
     }];
     
     [overlay addSubview:self];
@@ -451,39 +532,80 @@ CODialogSynth(highlightedIndex)
   [self performSelector:selector withObject:[NSNumber numberWithBool:flag] afterDelay:self.batchDelay];
 }
 
-- (void)hideAnimated:(BOOL)flag {
-  CODialogAssertMQ();
-  
-  CODialogWindowOverlay *overlay = self.overlay;
-  
-  // Nothing to hide if it is not key window
-  if (overlay == nil) {
-    return;
-  }
-  
-  NSTimeInterval animationDuration = (flag ? kCODialogAnimationDuration : 0.0);
-  [UIView animateWithDuration:animationDuration delay:0 options:UIViewAnimationOptionLayoutSubviews animations:^{
-    overlay.alpha = 0.0;
-    self.transform = CGAffineTransformMakeScale(kCODialogPopScale, kCODialogPopScale);
-  } completion:^(BOOL finished) {
-    overlay.hidden = YES;
-    self.transform = CGAffineTransformIdentity;
-    [self removeFromSuperview];
-    self.overlay = nil;
+- (void)hideAnimatedAndNotify:(BOOL)flag
+{
+    CODialogAssertMQ();
     
-    // Rekey host window
-    // https://github.com/eaigner/CODialog/issues/6
-    //
-    [self.hostWindow makeKeyWindow];
-  }];
+    CODialogWindowOverlay *overlay = self.overlay;
+    
+    // Nothing to hide if it is not key window
+    if (overlay == nil) {
+        return;
+    }
+    
+    NSTimeInterval animationDuration = (flag ? kCODialogAnimationDuration : 0.0);
+    [UIView animateWithDuration:animationDuration delay:0 options:UIViewAnimationOptionLayoutSubviews animations:^{
+        overlay.alpha = 0.0;
+        self.transform = CGAffineTransformScale([self dialogTransform], kCODialogPopScale, kCODialogPopScale);
+    } completion:^(BOOL finished) {
+        overlay.hidden = YES;
+        self.transform = [self dialogTransform];
+        [self removeFromSuperview];
+        self.overlay = nil;
+        
+        [[NSNotificationCenter defaultCenter]
+         postNotificationName:@"DidTimeout" object:nil];
+        
+        // Rekey host window
+        // https://github.com/eaigner/CODialog/issues/6
+        //
+        [self.hostWindow makeKeyWindow];
+    }];
 }
 
-- (void)hideAnimated:(BOOL)flag afterDelay:(NSTimeInterval)delay {
+- (void)hideAnimated:(BOOL)flag
+{
+    CODialogAssertMQ();
+    
+    CODialogWindowOverlay *overlay = self.overlay;
+    
+    // Nothing to hide if it is not key window
+    if (overlay == nil) {
+        return;
+    }
+    
+    NSTimeInterval animationDuration = (flag ? kCODialogAnimationDuration : 0.0);
+    [UIView animateWithDuration:animationDuration delay:0 options:UIViewAnimationOptionLayoutSubviews animations:^{
+        overlay.alpha = 0.0;
+        self.transform = CGAffineTransformScale([self dialogTransform], kCODialogPopScale, kCODialogPopScale);
+    } completion:^(BOOL finished) {
+        overlay.hidden = YES;
+        self.transform = [self dialogTransform];
+        [self removeFromSuperview];
+        self.overlay = nil;
+        
+        // Rekey host window
+        // https://github.com/eaigner/CODialog/issues/6
+        //
+        [self.hostWindow makeKeyWindow];
+    }];
+}
+
+
+
+- (void)hideAnimatedAndNotify:(BOOL)flag afterDelay:(NSTimeInterval)delay {
   CODialogAssertMQ();
-  
-  SEL selector = @selector(hideAnimated:);
-  [NSObject cancelPreviousPerformRequestsWithTarget:self selector:selector object:nil];
+  SEL selector = @selector(hideAnimatedAndNotify:);
+  //[NSObject cancelPreviousPerformRequestsWithTarget:self selector:selector object:nil];
   [self performSelector:selector withObject:[NSNumber numberWithBool:flag] afterDelay:delay];
+}
+
+
+- (void)hideAnimated:(BOOL)flag afterDelay:(NSTimeInterval)delay {
+    CODialogAssertMQ();
+    SEL selector = @selector(hideAnimated:);
+    //[NSObject cancelPreviousPerformRequestsWithTarget:self selector:selector object:nil];
+    [self performSelector:selector withObject:[NSNumber numberWithBool:flag] afterDelay:delay];
 }
 
 - (void)drawDialogBackgroundInRect:(CGRect)rect {
@@ -496,12 +618,38 @@ CODialogSynth(highlightedIndex)
   CGContextSetAlpha(context, 0.65);
   
   // Color Declarations
-  UIColor *color = [UIColor colorWithRed:0.047 green:0.141 blue:0.329 alpha:1.0];
-  
-  // Gradient Declarations
-  NSArray *gradientColors = [NSArray arrayWithObjects: 
-                              (id)[UIColor colorWithWhite:1.0 alpha:0.75].CGColor, 
-                              (id)[UIColor colorWithRed:0.227 green:0.310 blue:0.455 alpha:0.8].CGColor, nil];
+  //UIColor *color = [UIColor colorWithRed:0.047 green:0.141 blue:0.329 alpha:1.0];
+  UIColor *color;
+  NSArray *gradientColors;
+    
+
+    switch (dialogColorStyle_) {
+        case CODialogColorStyleBlue:
+            color = [UIColor colorWithRed:0.047 green:0.141 blue:0.329 alpha:0.9];
+            gradientColors = [NSArray arrayWithObjects:
+                              (id)[UIColor colorWithWhite : 1.0 alpha : 0.75].CGColor,
+                              (id)[UIColor colorWithRed : 0.227 green : 0.310 blue : 0.455 alpha : 0.8].CGColor, nil];
+            break;
+            
+        case CODialogColorStyleGreen:
+            color = [UIColor colorWithRed:0.047 green:0.329 blue:0.141 alpha:0.9];
+            gradientColors = [NSArray arrayWithObjects:
+                              (id)[UIColor colorWithWhite : 1.0 alpha : 0.75].CGColor,
+                              (id)[UIColor colorWithRed : 0.227 green : 0.455 blue : 0.310 alpha : 0.8].CGColor, nil];
+            break;
+            
+        case CODialogColorStyleOrange:
+            color = [UIColor colorWithRed:0.935 green:0.403 blue:0.02 alpha:0.9];
+            
+            
+            
+            gradientColors = [NSArray arrayWithObjects:
+                              (id)[UIColor colorWithWhite : 1.0 alpha : 0.75].CGColor,
+                              (id)[UIColor colorWithRed : 0.97 green : 0.582 blue : 0.0 alpha : 0.8].CGColor, nil];
+            break;
+    }
+    
+    
   CGFloat gradientLocations[] = {0, 1};
   CGGradientRef gradient2 = CGGradientCreateWithColors(colorSpace, (__bridge CFArrayRef)gradientColors, gradientLocations);
   
@@ -633,7 +781,8 @@ CODialogSynth(highlightedIndex)
                               CGPointMake(CGRectGetMidX(buttonFrame), CGRectGetMinY(buttonFrame)),
                               CGPointMake(CGRectGetMidX(buttonFrame), CGRectGetMaxY(buttonFrame)), 0);
   CGContextRestoreGState(ctx);
-  
+  CGGradientRelease(gradient);
+    
   // Draw highlight or down state
   if (highlighted) {
     CGContextSaveGState(ctx);
@@ -659,16 +808,27 @@ CODialogSynth(highlightedIndex)
   [strokePath stroke];
   
   // Draw title
+    
+  [[UIColor whiteColor] set];
+    
   CGFloat fontSize = 18.0;
   CGRect textFrame = CGRectIntegral(CGRectMake(0, (CGRectGetHeight(rect) - fontSize) / 2.0 - 1.0, CGRectGetWidth(rect), fontSize));
   
   CGContextSaveGState(ctx);
   CGContextSetShadowWithColor(ctx, CGSizeMake(0.0, -1.0), 0.0, [UIColor blackColor].CGColor);
   
-  [[UIColor whiteColor] set];
-  [title drawInRect:textFrame withFont:self.titleFont lineBreakMode:UILineBreakModeMiddleTruncation alignment:UITextAlignmentCenter];
-  
-  CGContextRestoreGState(ctx);
+
+    
+	NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle defaultParagraphStyle] mutableCopy];
+	paragraphStyle.lineBreakMode = NSLineBreakByTruncatingMiddle;
+	paragraphStyle.alignment = NSTextAlignmentCenter;
+	NSDictionary *dictionary = @{ NSFontAttributeName: self.titleFont,
+		                          NSParagraphStyleAttributeName: paragraphStyle,
+                                  NSForegroundColorAttributeName: [UIColor whiteColor] };
+    
+    
+	[title drawInRect:textFrame
+       withAttributes:dictionary];
   
   // Restore
   CGContextRestoreGState(ctx);
@@ -683,11 +843,21 @@ CODialogSynth(highlightedIndex)
     CGContextSetShadowWithColor(ctx, CGSizeMake(0.0, -1.0), 0.0, [UIColor blackColor].CGColor);
     
     UIFont *font = (isSubtitle ? self.subtitleFont : self.titleFont);
-    
+      
     [[UIColor whiteColor] set];
-    
-    [title drawInRect:rect withFont:font lineBreakMode:UILineBreakModeMiddleTruncation alignment:UITextAlignmentCenter];
-    
+
+      NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle defaultParagraphStyle] mutableCopy];
+      paragraphStyle.lineBreakMode = NSLineBreakByTruncatingMiddle;
+      paragraphStyle.alignment = NSTextAlignmentCenter;
+      
+      NSDictionary *dictionary = @{ NSFontAttributeName:font,
+                                    NSParagraphStyleAttributeName: paragraphStyle,
+                                    NSForegroundColorAttributeName: [UIColor whiteColor]};
+      [title drawInRect:rect
+         withAttributes:dictionary];
+      
+      
+      
     CGContextRestoreGState(ctx);
   }
 }

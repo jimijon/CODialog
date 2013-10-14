@@ -8,6 +8,12 @@
 
 #import <UIKit/UIKit.h>
 
+enum {
+        CODialogColorStyleBlue = 0,
+        CODialogColorStyleGreen,
+        CODialogColorStyleOrange
+    };
+typedef NSInteger CODialogColorStyle;
 
 enum {
   CODialogStyleDefault = 0,
@@ -22,10 +28,12 @@ typedef NSInteger CODialogStyle;
 @interface CODialog : UIView
 @property (nonatomic, strong) UIView *customView;
 @property (nonatomic, assign) CODialogStyle dialogStyle;
+@property (nonatomic, assign) CODialogColorStyle dialogColorStyle; 
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy) NSString *subtitle;
 @property (nonatomic, assign) CGFloat progress;
 @property (nonatomic, assign) NSTimeInterval batchDelay;
+@property (nonatomic, assign) CGFloat maximumDialogWidth; 
 
 + (instancetype)dialogWithWindow:(UIWindow *)hostWindow;
 
@@ -51,6 +59,7 @@ typedef NSInteger CODialogStyle;
 - (void)showOrUpdateAnimated:(BOOL)flag;
 - (void)hideAnimated:(BOOL)flag;
 - (void)hideAnimated:(BOOL)flag afterDelay:(NSTimeInterval)delay;
+- (void)hideAnimatedAndNotify:(BOOL)flag afterDelay:(NSTimeInterval)delay;
 
 /** @name Methods to Override */
 
